@@ -2,6 +2,7 @@ import os
 import asyncio
 import time
 import re
+import subprocess
 from dotenv import load_dotenv
 from pyrogram import Client, filters
 from pyrogram.errors import FloodWait
@@ -9,7 +10,7 @@ from yt_dlp import YoutubeDL
 from hachoir.metadata import extractMetadata
 from hachoir.parser import createParser
 
-# .env dosyasını yükle
+# ================= ENV =================
 load_dotenv()
 
 API_ID = int(os.getenv("API_ID"))
@@ -21,6 +22,7 @@ TARGET_CHAT = int(os.getenv("TARGET_CHAT"))
 DOWNLOAD_DIR = "downloads"
 COOKIE_FILE = "cookies.txt"
 
+# ================= APP =================
 app = Client(
     "playlist_bot",
     api_id=API_ID,
@@ -28,141 +30,150 @@ app = Client(
     session_string=STRING_SESSION
 )
 
-if not os.path.exists(DOWNLOAD_DIR):
-    os.makedirs(DOWNLOAD_DIR)
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-# Ubuntu için basit silme
+# ================= UTILS =================
 def remove_file(path):
-    try:
-        if path and os.path.exists(path):
+    if path and os.path.exists(path):
+        try:
             os.remove(path)
-            print(f"[🗑️] Silindi: {path}")
-    except Exception as e:
-        print(f"[❌] Silinemedi: {path} -> {e}")
+        except:
+            pass
 
-def get_video_info(file_path):
+def get_video_info(path):
     try:
-        if not os.path.exists(file_path):
-            return 0, 0, 0
-
-        parser = createParser(file_path)
-        if not parser:
-            return 0, 0, 0
-
+        parser = createParser(path)
         with parser:
-            metadata = extractMetadata(parser)
-            if not metadata:
-                return 0, 0, 0
-
-            duration = metadata.get("duration").seconds if metadata.has("duration") else 0
-            width = metadata.get("width") if metadata.has("width") else 0
-            height = metadata.get("height") if metadata.has("height") else 0
-
+            meta = extractMetadata(parser)
+            duration = meta.get("duration").seconds if meta.has("duration") else 0
+            width = meta.get("width") if meta.has("width") else 0
+            height = meta.get("height") if meta.has("height") else 0
             return duration, width, height
     except:
         return 0, 0, 0
 
-async def progress_log(current, total, video_title, start_time):
-    now = time.time()
-    diff = now - start_time
-    if round(diff % 5) == 0 or current == total:
-        percentage = (current * 100) / total
-        speed = current / (diff + 0.0001)
-        print(
-            f"📤 [YÜKLENİYOR] {video_title[:30]} | %{percentage:.1f} | {speed/1024:.1f} KB/s",
-            end="\r"
-        )
+def prepare_telegram_thumb(input_thumb):
+    if not input_thumb or not os.path.exists(input_thumb):
+        return None
 
+    output = "tg_thumb.jpg"
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", input_thumb,
+        "-vf", "scale=320:320:force_original_aspect_ratio=decrease",
+        "-frames:v", "1",
+        "-q:v", "2",
+        output
+    ]
+
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    if os.path.exists(output) and os.path.getsize(output) <= 200 * 1024:
+        return output
+    return None
+
+async def progress_log(current, total, title, start):
+    diff = time.time() - start
+    if round(diff % 5) == 0 or current == total:
+        percent = current * 100 / total
+        speed = current / (diff + 0.001)
+        print(f"📤 {title[:30]} %{percent:.1f} {speed/1024:.1f} KB/s", end="\r")
+
+# ================= CORE =================
 async def process_playlist(url):
     extract_opts = {
         "extract_flat": "in_playlist",
-        "lazy_playlist": True,
         "quiet": True,
-        "no_warnings": True,
-        "cookiefile": COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
+        "cookiefile": COOKIE_FILE,
     }
 
     download_opts = {
         "outtmpl": f"{DOWNLOAD_DIR}/%(title)s.%(ext)s",
-        "format": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best",
-        "writethumbnail": True,
-        "restrictfilenames": False,
+        "format": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best",
         "merge_output_format": "mp4",
+        "writethumbnail": True,
+        "postprocessors": [
+            {"key": "FFmpegThumbnailsConvertor", "format": "jpg"}
+        ],
+        "cookiefile": COOKIE_FILE,
         "quiet": True,
-        "no_warnings": True,
-        "cookiefile": COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            )
+        }
     }
 
-    try:
-        loop = asyncio.get_event_loop()
+    loop = asyncio.get_event_loop()
 
-        with YoutubeDL(extract_opts) as ydl:
-            print(f"\n🔍 Analiz Ediliyor: {url}")
-            info = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
-            entries = list(info["entries"]) if "entries" in info else [info]
-            print(f"✅ {len(entries)} video bulundu.")
+    with YoutubeDL(extract_opts) as ydl:
+        info = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
+        entries = list(info["entries"]) if "entries" in info else [info]
 
-        for index, entry in enumerate(entries, 1):
-            if not entry:
-                continue
+    for i, entry in enumerate(entries, 1):
+        if not entry:
+            continue
 
-            v_url = entry.get("url") or f"https://www.youtube.com/watch?v={entry['id']}"
+        v_url = entry.get("url") or f"https://www.youtube.com/watch?v={entry['id']}"
 
-            try:
-                with YoutubeDL(download_opts) as ydl_dl:
-                    print(f"\n📥 [{index}/{len(entries)}] İndiriliyor...")
-                    video_info = await loop.run_in_executor(
-                        None, lambda: ydl_dl.extract_info(v_url, download=True)
-                    )
+        try:
+            with YoutubeDL(download_opts) as ydl:
+                print(f"\n📥 [{i}/{len(entries)}] İndiriliyor")
+                info = await loop.run_in_executor(None, lambda: ydl.extract_info(v_url, download=True))
+                video_path = ydl.prepare_filename(info).rsplit(".", 1)[0] + ".mp4"
 
-                    video_path = ydl_dl.prepare_filename(video_info)
-                    if not os.path.exists(video_path):
-                        video_path = video_path.rsplit(".", 1)[0] + ".mp4"
+            title = info.get("title", f"Video_{i}")
 
-                    title = video_info.get("title", f"Video_{index}")
-                    thumb_path = os.path.splitext(video_path)[0] + ".jpg"
+            thumb_candidates = [
+                os.path.splitext(video_path)[0] + ".jpg",
+                os.path.splitext(video_path)[0] + ".webp",
+                os.path.splitext(video_path)[0] + ".png",
+            ]
 
-                    if os.path.exists(video_path):
-                        duration, width, height = get_video_info(video_path)
-                        start_time = time.time()
+            raw_thumb = next((t for t in thumb_candidates if os.path.exists(t)), None)
+            tg_thumb = prepare_telegram_thumb(raw_thumb)
 
-                        await app.send_video(
-                            chat_id=TARGET_CHAT,
-                            video=video_path,
-                            thumb=thumb_path if os.path.exists(thumb_path) else None,
-                            duration=duration,
-                            width=width,
-                            height=height,
-                            caption=title,
-                            progress=progress_log,
-                            progress_args=(title, start_time)
-                        )
+            duration, width, height = get_video_info(video_path)
+            start = time.time()
 
-                        print(f"\n✅ Yüklendi: {title}")
+            await app.send_video(
+                chat_id=TARGET_CHAT,
+                video=video_path,
+                thumb=tg_thumb,
+                caption=title,
+                duration=duration,
+                width=width,
+                height=height,
+                progress=progress_log,
+                progress_args=(title, start)
+            )
 
-                        remove_file(video_path)
-                        remove_file(thumb_path)
+            print(f"\n✅ Yüklendi: {title}")
 
-            except FloodWait as e:
-                print(f"\n⚠️ FloodWait: {e.value} saniye bekleniyor...")
-                await asyncio.sleep(e.value)
+            remove_file(video_path)
+            remove_file(raw_thumb)
+            remove_file(tg_thumb)
 
-            except Exception as e:
-                print(f"\n❌ Video Hatası: {e}")
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
+        except Exception as e:
+            print(f"\n❌ Video Hatası: {e}")
 
-    except Exception as e:
-        print(f"\n💥 Kritik Hata: {e}")
-
+# ================= LISTENER =================
 @app.on_message(filters.chat(SOURCE_CHAT) & filters.text)
-async def listener(client, message):
-    yt_regex = r"(https?://)?(www\.)?(youtube\.com|youtu\.be)\S+"
-    match = re.search(yt_regex, message.text)
-    if match:
-        asyncio.create_task(process_playlist(match.group()))
+async def listener(_, message):
+    yt = r"(https?://)?(www\.)?(youtube\.com|youtu\.be)\S+"
+    m = re.search(yt, message.text)
+    if m:
+        asyncio.create_task(process_playlist(m.group()))
 
+# ================= MAIN =================
 async def main():
     await app.start()
-    print("🚀 Bot Ubuntu üzerinde aktif!")
+    print("🚀 Bot aktif")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
