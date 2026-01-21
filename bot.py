@@ -2,6 +2,7 @@ import os
 import asyncio
 import time
 import re
+import json
 import subprocess
 from dotenv import load_dotenv
 from pyrogram import Client, filters
@@ -21,6 +22,7 @@ TARGET_CHAT = int(os.getenv("TARGET_CHAT"))
 
 DOWNLOAD_DIR = "downloads"
 COOKIE_FILE = "cookies.txt"
+PLAYLIST_JSON = "playlist_urls.json"
 
 # ================= APP =================
 app = Client(
@@ -80,13 +82,55 @@ async def progress_log(current, total, title, start):
         speed = current / (diff + 0.001)
         print(f"📤 {title[:30]} %{percent:.1f} {speed/1024:.1f} KB/s", end="\r")
 
-# ================= CORE =================
-async def process_playlist(url):
+# ================= PLAYLIST → JSON =================
+async def playlist_to_json(url):
     extract_opts = {
-        "extract_flat": "in_playlist",
+        "extract_flat": True,
         "quiet": True,
         "cookiefile": COOKIE_FILE,
     }
+
+    loop = asyncio.get_event_loop()
+
+    with YoutubeDL(extract_opts) as ydl:
+        info = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
+
+    entries = info.get("entries", [])
+    videos = []
+
+    for i, entry in enumerate(entries, 1):
+        if not entry:
+            continue
+
+        v_url = entry.get("url") or f"https://www.youtube.com/watch?v={entry['id']}"
+        videos.append({
+            "index": i,
+            "video_url": v_url
+        })
+
+    data = {
+        "playlist_url": url,
+        "total": len(videos),
+        "videos": videos
+    }
+
+    with open(PLAYLIST_JSON, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+    print(f"📄 JSON oluşturuldu: {PLAYLIST_JSON} ({len(videos)} video)")
+    return data
+
+# ================= DOWNLOAD FROM JSON =================
+async def process_from_json():
+    if not os.path.exists(PLAYLIST_JSON):
+        print("❌ JSON bulunamadı")
+        return
+
+    with open(PLAYLIST_JSON, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    videos = data.get("videos", [])
+    total = len(videos)
 
     download_opts = {
         "outtmpl": f"{DOWNLOAD_DIR}/%(title)s.%(ext)s",
@@ -109,23 +153,17 @@ async def process_playlist(url):
 
     loop = asyncio.get_event_loop()
 
-    with YoutubeDL(extract_opts) as ydl:
-        info = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
-        entries = list(info["entries"]) if "entries" in info else [info]
-
-    for i, entry in enumerate(entries, 1):
-        if not entry:
-            continue
-
-        v_url = entry.get("url") or f"https://www.youtube.com/watch?v={entry['id']}"
+    for item in videos:
+        index = item["index"]
+        v_url = item["video_url"]
 
         try:
             with YoutubeDL(download_opts) as ydl:
-                print(f"\n📥 [{i}/{len(entries)}] İndiriliyor")
+                print(f"\n📥 [{index}/{total}] İndiriliyor")
                 info = await loop.run_in_executor(None, lambda: ydl.extract_info(v_url, download=True))
                 video_path = ydl.prepare_filename(info).rsplit(".", 1)[0] + ".mp4"
 
-            title = info.get("title", f"Video_{i}")
+            title = info.get("title", f"Video_{index}")
 
             thumb_candidates = [
                 os.path.splitext(video_path)[0] + ".jpg",
@@ -168,12 +206,14 @@ async def listener(_, message):
     yt = r"(https?://)?(www\.)?(youtube\.com|youtu\.be)\S+"
     m = re.search(yt, message.text)
     if m:
-        asyncio.create_task(process_playlist(m.group()))
+        playlist_url = m.group()
+        await playlist_to_json(playlist_url)
+        asyncio.create_task(process_from_json())
 
 # ================= MAIN =================
 async def main():
     await app.start()
-    print("🚀 Bot aktif")
+    print("🚀 Bot aktif (JSON tabanlı)")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
