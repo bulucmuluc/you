@@ -21,7 +21,6 @@ SOURCE_CHAT = int(os.getenv("SOURCE_CHAT"))
 TARGET_CHAT = int(os.getenv("TARGET_CHAT"))
 
 DOWNLOAD_DIR = "downloads"
-COOKIE_FILE = "cookies.txt"
 PLAYLIST_JSON = "playlist_urls.json"
 
 # ================= APP =================
@@ -87,10 +86,6 @@ async def playlist_to_json(url):
     extract_opts = {
         "extract_flat": True,
         "quiet": True,
-        "cookiefile": COOKIE_FILE,
-        "ignoreerrors": True,
-        "no_warnings": True,
-        "simulate": True,
     }
 
     loop = asyncio.get_event_loop()
@@ -137,19 +132,13 @@ async def process_from_json():
 
     download_opts = {
         "outtmpl": f"{DOWNLOAD_DIR}/%(title)s.%(ext)s",
-        "format": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "format": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best",
         "merge_output_format": "mp4",
         "writethumbnail": True,
         "postprocessors": [
             {"key": "FFmpegThumbnailsConvertor", "format": "jpg"}
         ],
-        "cookiefile": COOKIE_FILE,
         "quiet": True,
-        "ignoreerrors": True,
-        "no_warnings": True,
-        "prefer_ffmpeg": True,
-        "geo_bypass": True,
-        "compat_opts": ["no-youtube-unavailable-videos"],
         "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -204,7 +193,6 @@ async def process_from_json():
             remove_file(tg_thumb)
 
         except FloodWait as e:
-            print(f"⏳ Telegram FloodWait: {e.value}s bekleniyor")
             await asyncio.sleep(e.value)
         except Exception as e:
             print(f"\n❌ Video Hatası: {e}")
@@ -222,7 +210,7 @@ async def listener(_, message):
 # ================= MAIN =================
 async def main():
     await app.start()
-    print("🚀 Bot aktif (JSON tabanlı, hatasız YouTube indirme)")
+    print("🚀 Bot aktif (JSON tabanlı)")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
