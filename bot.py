@@ -137,7 +137,7 @@ async def process_from_json():
 
     download_opts = {
         "outtmpl": f"{DOWNLOAD_DIR}/%(title)s.%(ext)s",
-        "format": "bestvideo[height<=720]+bestaudio/best[height<=720]",
+        "format": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "merge_output_format": "mp4",
         "writethumbnail": True,
         "postprocessors": [
